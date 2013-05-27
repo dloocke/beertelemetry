@@ -4,25 +4,36 @@
 #include <termios.h>
 #include <fcntl.h>
 #include <string.h>
+#include <math.h>
+#include "lifo.h"
 
 /* Daemon which lols around in the background recording the telemetry values once per [update rate]
  * Currently updates: temperature
  */
 
 #define UPDATE_RATE_SEC 1
+#define SSEG_LENGTH     4
+#define TEMP_AVG_LENGTH 5
 
-const char temp_log_path[] = "/var/www/logs/temp_n1.csv";
+const char clear_sseg   = 0x76;
+const char decimal_trig = 0x77;
+const char cursor_trig  = 0x79;
+
+const char temp_log_path[] = "/var/www/logs/temp_history.csv";
 const char adc2_path[] = "/sys/devices/ocp.2/helper.14/AIN2";
 const char uart_port[] = "/dev/ttyO5";
+
+LIFO temp_samples_q = { .max_length=TEMP_AVG_LENGTH, .first=NULL, .last=NULL };
 
 int getTemp(float *temperature);
 int logTempToFile(float temperature);
 int initializeUART(int *fd);
+int writeTempToSSEG(int fd, float temperature);
 
 int main(int argc, char **argv)
 {
 		int ret;
-        float temp_n1;
+        float temp, temp_avg;
         int fd;
 
         ret = initializeUART(&fd);
@@ -32,16 +43,52 @@ int main(int argc, char **argv)
         }
 
         for(;;) {
-            getTemp(&temp_n1);
-            logTempToFile(temp_n1);
+            getTemp(&temp);
+            
+            autoQueue(&temp_samples_q, temp);
+            queueBasicAverage(&temp_samples_q, &temp_avg);
 
-            char byte_out[4] = {0x30, 0x30, 0x30, 0x30};
-            write(fd, byte_out, strlen(byte_out));
+            logTempToFile(temp_avg);
+            writeTempToSSEG(fd, temp_avg);
 
             sleep(UPDATE_RATE_SEC);
         }
 
         return 0;
+}
+
+int writeTempToSSEG(int fd, float temperature)
+{
+    char buffer[16];
+    char c;
+    unsigned int i, ssegFilled;
+
+    if(fd < 0) {
+        fprintf(stdout, "Invalid file descriptor passed to 'writeTempToSSEG', returning\n");
+        return -1;
+    }
+
+    write(fd, &cursor_trig, sizeof(cursor_trig)/sizeof(char)); //reset cursor position
+    c = 0x00;
+    write(fd, &c, sizeof(c)/sizeof(char));
+
+    memset(buffer, 0, sizeof(buffer)/sizeof(char));
+    sprintf(buffer, "%.3f", temperature);
+
+    ssegFilled = i = 0;
+    while((i < strlen(buffer)) && (ssegFilled < SSEG_LENGTH)) {
+        if(buffer[i] == '.') {
+            write(fd, &decimal_trig, sizeof(decimal_trig)/sizeof(char));
+            c = '0' + (unsigned int)pow(2, i-1);
+            write(fd, &c, sizeof(c)/sizeof(char));
+        } else {
+            write(fd, buffer+i, sizeof(buffer[i])/sizeof(char));
+            ssegFilled++;
+        }
+        i++;
+    }
+
+    return 0;
 }
 
 int getTemp(float *temperature)

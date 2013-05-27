@@ -17,10 +17,10 @@
 case "$1" in
   start)
     echo cape-bone-iio > /sys/devices/bone_capemgr.9/slots
-    echo enable-uart5 > /sys/devices/bone_capemgr.9/slots
+    /home/root/updatetelemetryd &
     ;;
   stop)
-    # no-op (maybe remove ADC enable?)
+    echo 
     ;;
   *)
     echo "Usage: /etc/init.d/beertelemetry {start|stop}"
